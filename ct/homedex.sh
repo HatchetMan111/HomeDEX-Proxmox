@@ -15,6 +15,11 @@
 #   Backend + Web-UI: https://github.com/HarshShah0203/homedex
 #   Release-Binary enthält die bereits gebaute Web-UI (kein Node-Build nötig).
 
+# Eigenes Repo als Script-Basis: ohne das sucht die Engine install/*.sh im
+# Community-Repo statt in diesem Fork (404). Muss VOR dem Laden des Cores stehen.
+COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercontent.com/HatchetMan111/HomeDEX-Proxmox/main}"
+export COMMUNITY_SCRIPTS_URL
+
 # Community-Scripts-Core laden (Standard-Vorgehen der Proxmox Community-Scripts)
 _cs_boot="${COMMUNITY_SCRIPTS_CORE_DIR:-$(dirname "${BASH_SOURCE[0]}")/../../core}/core/build.func"
 # shellcheck disable=SC1090,SC1091
