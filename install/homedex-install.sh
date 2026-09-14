@@ -51,6 +51,26 @@ INSTALL_DIR="/opt/homedex"
 DATA_DIR="${HOMEDEX_DATA_DIR:-/var/lib/homedex}"
 SERVICE_USER="homedex"
 
+# ---------- 1b. Preflight: alles prüfen, BEVOR etwas verändert wird ----------
+if [[ "$(id -u)" -ne 0 ]]; then
+  msg_error "Bitte als root ausführen."
+  exit 1
+fi
+# Sperre: Installer gehört IN den LXC/die VM – niemals auf den Proxmox-Host.
+if command -v pveversion >/dev/null 2>&1; then
+  msg_error "pveversion gefunden – das sieht nach dem Proxmox-HOST aus. Dieses Script läuft IM LXC/Container (ct/homedex.sh erstellt ihn). Abbruch, keine Änderung vorgenommen."
+  exit 1
+fi
+FREE_MB="$(df -m --output=avail / 2>/dev/null | tail -1 | tr -d ' ' || echo 0)"
+if [[ "${FREE_MB:-0}" -lt 2048 ]]; then
+  msg_error "Zu wenig freier Plattenplatz auf / (${FREE_MB} MB, min. 2048 MB). Abbruch vor jeder Änderung."
+  exit 1
+fi
+TOTAL_RAM_MB="$(free -m 2>/dev/null | awk '/^Mem:/ {print $2}' || echo 0)"
+if [[ "${TOTAL_RAM_MB:-0}" -lt 512 ]]; then
+  msg_warn "Wenig RAM (${TOTAL_RAM_MB} MB) – Homedex + Docker brauchen min. ca. 512 MB."
+fi
+
 msg_info "Homedex-Installation (Port ${PORT}, Daten ${DATA_DIR})"
 
 # ---------- 2. Architektur auflösen ----------
@@ -119,15 +139,26 @@ msg_ok "User + Datenverzeichnis bereit"
 
 # ---------- 6b. Docker (für lokales Discovery per Unix-Socket) ----------
 # Muss VOR dem Service-Start passieren, damit die docker-Gruppe für homedex gilt.
+# Absichtlich ausfallsicher: Scheitert Docker, läuft Homedex trotzdem weiter
+# (Docker-Quelle dann remote per tcp:// oder SSH-Host im Wizard einbinden).
+DOCKER_OK=0
 if [[ "$INSTALL_DOCKER" == "1" || "$INSTALL_DOCKER" == "true" || "$INSTALL_DOCKER" == "yes" ]]; then
   msg_info "Installiere Docker (Wizard-Endpoint: unix:///var/run/docker.sock)"
-  $STD apt-get install -y docker.io
-  systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || true
-  usermod -aG docker "$SERVICE_USER"
-  if docker version >/dev/null 2>&1; then
-    msg_ok "Docker läuft (Server $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo ok))"
+  if $STD apt-get install -y --no-install-recommends docker.io; then
+    systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || true
+    if getent group docker >/dev/null 2>&1 && usermod -aG docker "$SERVICE_USER"; then
+      DOCKER_OK=1
+    else
+      msg_warn "docker-Gruppe fehlt oder usermod scheiterte – Homedex läuft ohne lokale Docker-Quelle weiter."
+    fi
   else
-    msg_warn "Docker startet nicht – Host-Features prüfen (nesting=1,keyctl=1), dann Container neu starten"
+    msg_warn "Docker-Installation fehlgeschlagen – Homedex läuft ohne lokale Docker-Quelle weiter."
+  fi
+  if [[ "$DOCKER_OK" == "1" ]] && docker version >/dev/null 2>&1; then
+    msg_ok "Docker läuft (Server $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo ok))"
+  elif [[ "$DOCKER_OK" == "1" ]]; then
+    DOCKER_OK=0
+    msg_warn "Docker startet nicht – Host-Features prüfen (nesting=1,keyctl=1), dann Container neu starten."
   fi
 else
   msg_info "Docker-Installation übersprungen (Remote-Docker per tcp:// oder SSH im Wizard eintragen)"
@@ -185,7 +216,7 @@ else
 fi
 
 # Docker-Socket aus Sicht des homedex-Users prüfen (Wizard nutzt diesen Endpoint)
-if [[ "$INSTALL_DOCKER" == "1" || "$INSTALL_DOCKER" == "true" || "$INSTALL_DOCKER" == "yes" ]]; then
+if [[ "$DOCKER_OK" == "1" ]]; then
   if runuser -u "$SERVICE_USER" -- test -r /var/run/docker.sock 2>/dev/null; then
     msg_ok "Wizard-Tipp: als Read-only endpoint unix:///var/run/docker.sock eintragen"
   else

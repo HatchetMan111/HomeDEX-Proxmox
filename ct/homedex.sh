@@ -52,6 +52,19 @@ variables
 color
 catch_errors
 
+# Host-Preflight: früh abbrechen, bevor ein halbfertiger Container entsteht.
+if command -v pveversion >/dev/null 2>&1; then
+  FREE_HOST_MB="$(df -m --output=avail / 2>/dev/null | tail -1 | tr -d ' ' || echo 0)"
+  if [[ "${FREE_HOST_MB:-0}" -lt 1024 ]]; then
+    msg_error "Host-/: nur ${FREE_HOST_MB} MB frei (min. 1024 MB). Bitte aufräumen, dann erneut starten. Keine Änderung vorgenommen."
+    exit 1
+  fi
+  FREE_RAM_MB="$(free -m 2>/dev/null | awk '/^Mem:/ {print $7}' || echo 0)"
+  if [[ "${FREE_RAM_MB:-0}" -lt 512 ]]; then
+    msg_warn "Host hat nur ${FREE_RAM_MB} MB freien RAM – LXC-Erstellung läuft trotzdem, kann aber langsam sein."
+  fi
+fi
+
 function update_script() {
   header_info
   check_container_storage
