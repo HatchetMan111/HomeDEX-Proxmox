@@ -59,6 +59,29 @@ journalctl -u homedex -f
 curl http://127.0.0.1:7377/api/health
 ```
 
+## Wenn die Container-Erstellung hängt (LVM-Lock auf dem Host)
+
+Symptom: `vzcreate` stirbt mit `got unexpected control message`, Config enthält nur
+`lock: create`, danach hängen `lvs`/`vgs`/`pvesm` ewig, GUI zeigt keine Namen mehr,
+API → 596, Shell/Console → exit code 1. Ursache ist Host-seitig: ein verwaistes
+`lvcreate --name vm-<CTID>-disk-0` (PPID 1, hängt in `semop`) hält den `V_pve`-Lock.
+Das ct-Script erkennt das seit dem Storage-Preflight vorab und bricht kontrolliert ab.
+
+Manuelle Bergung (Host-Shell als root):
+
+```bash
+ps aux | grep -E 'lvcreate|vzcreate'   # D-State / hohe Laufzeit / PPID 1 suchen
+timeout 10 vgs                          # muss sofort antworten – sonst Lock gehalten
+kill -9 <lvcreate-PID>                  # gibt den Lock sofort frei
+timeout 10 vgs && lvs                   # Kontrolle: antwortet wieder
+pct unlock <CTID>                       # ggf. lock: create entfernen
+pct destroy <CTID>                      # halb erstellten Container entsorgen
+pvesm status                            # Kontrolle: antwortet wieder
+lvs -o vg_name,pool_lv,data_percent,metadata_percent  # Thin-Pool-Füllstand prüfen
+```
+
+Danach Host-Script erneut laufen lassen.
+
 ## Ressourcen
 
 - Default: 2 CPU / 1 GB RAM / 8 GB Disk (8 GB wegen Docker-Overlay).

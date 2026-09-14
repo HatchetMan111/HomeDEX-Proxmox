@@ -45,7 +45,9 @@ var_homedex_port="${var_homedex_port:-7377}"
 # var_docker=0 überspringt die automatische Docker-Installation im LXC
 # (dann Remote-Docker per tcp:// oder SSH-Host im Wizard eintragen).
 var_docker="${var_docker:-1}"
-export var_homedex_port var_docker
+# var_skip_storage_check=1 überspringt den Storage-Preflight (nicht empfohlen).
+var_skip_storage_check="${var_skip_storage_check:-0}"
+export var_homedex_port var_docker var_skip_storage_check
 
 header_info "$APP"
 variables
@@ -64,6 +66,72 @@ if command -v pveversion >/dev/null 2>&1; then
     msg_warn "Host hat nur ${FREE_RAM_MB} MB freien RAM – LXC-Erstellung läuft trotzdem, kann aber langsam sein."
   fi
 fi
+
+# Storage-Preflight (Host): erkennt verwaiste LVM-Prozesse, hängende LVM-Locks
+# und volle Thin-Pools, BEVOR build_container einen halbfertigen Container
+# (lock: create in der Config) hinterlässt und lvs/vgs/pvesm/GUI blockieren.
+# Hintergrund: ein verwaistes lvcreate (PPID 1, hängt in semop) hält den
+# V_pve-Lock – danach warten alle LVM-Aufrufe ewig, GUI/API/Shell fallen um.
+# Hier wird nie automatisch gekillt – nur kontrolliert abgebrochen mit Anleitung.
+function storage_preflight() {
+  command -v pveversion >/dev/null 2>&1 || return 0
+  if [[ "${var_skip_storage_check:-0}" == "1" ]]; then
+    msg_warn "Storage-Preflight übersprungen (var_skip_storage_check=1)"
+    return 0
+  fi
+  msg_info "Storage-Preflight (LVM-Health)"
+
+  # 1. Hängende LVM-Prozesse: lvcreate & Co. in D-State oder >10 Min Laufzeit.
+  STUCK_PIDS="$(ps -eo pid,ppid,etimes,stat,args 2>/dev/null | awk '$5 ~ /(^|\/)(lvcreate|lvremove|lvconvert|lvresize|lvextend|pvmove|vzcreate)/ && ($3 > 600 || $4 ~ /D/) {print "PID "$1" (PPID "$2", "$3"s, state "$4"): "$5}' || true)"
+  if [[ -n "${STUCK_PIDS:-}" ]]; then
+    msg_error "Hängende LVM-Prozesse gefunden (blockieren den V_pve-Lock):"
+    echo "$STUCK_PIDS"
+    echo -e "${INFO}Bereinigen, dann Script erneut starten:${CL}"
+    echo -e "${TAB}kill -9 <PID>  # verwaistes lvcreate töten – gibt den Lock sofort frei"
+    echo -e "${TAB}timeout 10 vgs  # muss danach sofort antworten"
+    echo -e "${TAB}pct unlock <CTID> / pct destroy <CTID>  # halb erstellten Container aufräumen"
+    exit 1
+  fi
+  msg_ok "Keine hängenden LVM-Prozesse"
+
+  # 2. Antwortet LVM überhaupt? (hängt bei gehaltenem Lock ewig → mit timeout testen)
+  if ! timeout 25 vgs --noheadings >/dev/null 2>&1; then
+    msg_error "LVM antwortet nicht (timeout 25s bei 'vgs') – vermutlich gehaltener V_pve-Lock. Prüfen: ps aux | grep -E 'lvcreate|vzcreate' (D-State?). Abbruch vor der Container-Erstellung."
+    exit 1
+  fi
+  msg_ok "LVM antwortet"
+
+  # 3. Thin-Pool-Füllstand: voller Pool → lvcreate hängt/failed (Bsp: got unexpected control message).
+  POOLS="$(timeout 25 lvs --noheadings --separator '|' -o vg_name,pool_lv,data_percent,metadata_percent 2>/dev/null || true)"
+  POOL_ABORT=0
+  while IFS='|' read -r VG POOL DATA META _REST; do
+    VG="$(echo "$VG" | tr -d ' ')"
+    POOL="$(echo "$POOL" | tr -d ' ')"
+    [[ -z "${POOL:-}" ]] && continue
+    DATA_NUM="$(echo "${DATA:-0}" | tr -d ' %')"
+    META_NUM="$(echo "${META:-0}" | tr -d ' %')"
+    if awk "BEGIN {exit !((${DATA_NUM:-0} >= 98) || (${META_NUM:-0} >= 90))}"; then
+      msg_error "Thin-Pool ${VG}/${POOL} kritisch voll (data ${DATA}%, meta ${META}%) – lvcreate würde hängen/fehlschlagen. Pool erweitern/aufräumen, dann erneut starten."
+      POOL_ABORT=1
+    elif awk "BEGIN {exit !((${DATA_NUM:-0} >= 90) || (${META_NUM:-0} >= 75))}"; then
+      msg_warn "Thin-Pool ${VG}/${POOL} stark gefüllt (data ${DATA}%, meta ${META}%) – im Auge behalten."
+    fi
+  done <<<"$POOLS"
+  if [[ "$POOL_ABORT" == "1" ]]; then
+    exit 1
+  fi
+  msg_ok "Thin-Pools ok"
+
+  # 4. Alte Container-Locks (lock: create/...) – nur Hinweis, kein Abbruch.
+  STALE_LOCKS="$(grep -l '^lock:' /etc/pve/nodes/*/lxc/*.conf /etc/pve/nodes/*/qemu-server/*.conf 2>/dev/null || true)"
+  if [[ -n "${STALE_LOCKS:-}" ]]; then
+    msg_warn "Alte Container-Locks gefunden (ggf. Reste früherer Abbrüche):"
+    echo "$STALE_LOCKS" | while read -r f; do echo -e "${TAB}${f}: $(grep '^lock:' "$f")"; done
+    echo -e "${TAB}Aufräumen z. B. mit: pct unlock <CTID>"
+  fi
+}
+
+storage_preflight
 
 function update_script() {
   header_info
