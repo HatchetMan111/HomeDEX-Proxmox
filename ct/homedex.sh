@@ -33,16 +33,19 @@ var_hostname="${var_hostname:-homedex}"
 var_tags="${var_tags:-homelab;inventory;homedex}"
 var_cpu="${var_cpu:-2}"
 var_ram="${var_ram:-1024}"
-var_disk="${var_disk:-4}"
+var_disk="${var_disk:-8}"
 var_os="${var_os:-debian}"
 var_version="${var_version:-12}"
 var_arch="${var_arch:-amd64}"
 var_unprivileged="${var_unprivileged:-1}"
-# nesting=1 ist harmlos und erlaubt optional Docker / Socket-Proxy im selben LXC.
-var_features="${var_features:-nesting=1}"
+# nesting+keyctl: erlaubt Docker im LXC (für lokales Discovery per Unix-Socket).
+var_features="${var_features:-nesting=1,keyctl=1}"
 
 var_homedex_port="${var_homedex_port:-7377}"
-export var_homedex_port
+# var_docker=0 überspringt die automatische Docker-Installation im LXC
+# (dann Remote-Docker per tcp:// oder SSH-Host im Wizard eintragen).
+var_docker="${var_docker:-1}"
+export var_homedex_port var_docker
 
 header_info "$APP"
 variables

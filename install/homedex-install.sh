@@ -44,6 +44,9 @@ update_os
 # ---------- 1. Konfiguration ----------
 REPO="${HOMEDEX_REPO:-HarshShah0203/homedex}"
 PORT="${var_homedex_port:-${HOMEDEX_PORT:-7377}}"
+# Docker im gleichen LXC installieren, damit der Wizard direkt
+# unix:///var/run/docker.sock nutzen kann (0/empty zum Überspringen).
+INSTALL_DOCKER="${var_docker:-${HOMEDEX_INSTALL_DOCKER:-1}}"
 INSTALL_DIR="/opt/homedex"
 DATA_DIR="${HOMEDEX_DATA_DIR:-/var/lib/homedex}"
 SERVICE_USER="homedex"
@@ -114,6 +117,22 @@ chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR"
 chmod 0750 "$DATA_DIR"
 msg_ok "User + Datenverzeichnis bereit"
 
+# ---------- 6b. Docker (für lokales Discovery per Unix-Socket) ----------
+# Muss VOR dem Service-Start passieren, damit die docker-Gruppe für homedex gilt.
+if [[ "$INSTALL_DOCKER" == "1" || "$INSTALL_DOCKER" == "true" || "$INSTALL_DOCKER" == "yes" ]]; then
+  msg_info "Installiere Docker (Wizard-Endpoint: unix:///var/run/docker.sock)"
+  $STD apt-get install -y docker.io
+  systemctl enable --now docker 2>/dev/null || service docker start 2>/dev/null || true
+  usermod -aG docker "$SERVICE_USER"
+  if docker version >/dev/null 2>&1; then
+    msg_ok "Docker läuft (Server $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo ok))"
+  else
+    msg_warn "Docker startet nicht – Host-Features prüfen (nesting=1,keyctl=1), dann Container neu starten"
+  fi
+else
+  msg_info "Docker-Installation übersprungen (Remote-Docker per tcp:// oder SSH im Wizard eintragen)"
+fi
+
 # ---------- 7. systemd-Service ----------
 msg_info "Richte systemd-Service ein (Port ${PORT})"
 cat <<EOF >/etc/systemd/system/homedex.service
@@ -165,6 +184,15 @@ else
   msg_warn "Web-UI antwortet noch nicht – prüfe: systemctl status homedex / journalctl -u homedex -e"
 fi
 
+# Docker-Socket aus Sicht des homedex-Users prüfen (Wizard nutzt diesen Endpoint)
+if [[ "$INSTALL_DOCKER" == "1" || "$INSTALL_DOCKER" == "true" || "$INSTALL_DOCKER" == "yes" ]]; then
+  if runuser -u "$SERVICE_USER" -- test -r /var/run/docker.sock 2>/dev/null; then
+    msg_ok "Wizard-Tipp: als Read-only endpoint unix:///var/run/docker.sock eintragen"
+  else
+    msg_warn "homedex kann /var/run/docker.sock nicht lesen – prüfe: ls -l /var/run/docker.sock; id homedex"
+  fi
+fi
+
 # ---------- 9. Kurzanleitung ----------
 cat <<EOF >"$INSTALL_DIR/README.txt"
 Homedex LXC – Kurzanleitung
@@ -172,10 +200,10 @@ Homedex LXC – Kurzanleitung
 Web-UI : http://${LOCAL_IP}:${PORT}/
 Health : http://${LOCAL_IP}:${PORT}/api/health
 
-Erster Aufruf: Setup-Wizard im Browser legt das Admin-Passwort an,
-danach erste Quelle verbinden (z. B. Docker-Socket-Proxy
-tcp://docker-socket-proxy:2375, Traefik, Caddy, NPM oder SSH-Host)
-und ersten Scan starten – siehe Sources in der UI.
+Erster Aufruf: Setup-Wizard im Browser legt das Admin-Passwort an.
+Docker-Quelle (lokal, automatisch installiert): unix:///var/run/docker.sock
+Alternativ Remote-Docker (tcp://IP:2375), Traefik, Caddy, NPM oder SSH-Host
+unter Sources verbinden und ersten Scan starten.
 
 Daten (SQLite): ${DATA_DIR}  -> in Proxmox-Backup einschliessen.
 Service: systemctl status homedex | journalctl -u homedex -f
