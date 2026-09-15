@@ -384,3 +384,9 @@ cleanup_lxc
 
 echo -e "${TAB}Homedex-Web-UI: ${GN}http://${LOCAL_IP}:${PORT}/${CL}"
 echo -e "${TAB}Beim ersten Aufruf erscheint der Setup-Wizard (Admin-Passwort anlegen) – danach sofort nutzbar.${CL}"
+echo -e "${TAB}Wizard → First source → Docker source ausfüllen:${CL}"
+echo -e "${TAB}  Source name:        Local Docker${CL}"
+echo -e "${TAB}  Read-only endpoint: ${GN}${WIZARD_ENDPOINT}${CL}  (Compose-Prefill tcp://docker-socket-proxy:2375 NICHT übernehmen)${CL}"
+echo -e "${TAB}  Host name override: docker-local (optional)${CL}"
+echo -e "${TAB}  Host address:       127.0.0.1 (optional)${CL}"
+echo -e "${TAB}Dann: Test connection → Save and run first scan.${CL}"

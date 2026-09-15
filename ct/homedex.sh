@@ -192,4 +192,9 @@ echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
 echo -e "${INFO}${YW}Web-UI (beim ersten Aufruf Setup-Wizard für Admin-Passwort):${CL}"
 echo -e "${GATEWAY}${BGN}http://${IP}:${var_homedex_port}${CL}"
 echo -e "${INFO}${YW}Health-Check:${CL} http://${IP}:${var_homedex_port}/api/health"
+if [[ "${var_docker_proxy:-0}" == "1" ]]; then
+  echo -e "${INFO}${YW}Wizard → First source:${CL} Source name=Local Docker, Read-only endpoint=${BGN}tcp://127.0.0.1:2375${CL}, Test connection → Save and run first scan.${CL}"
+else
+  echo -e "${INFO}${YW}Wizard → First source:${CL} Source name=Local Docker, Read-only endpoint=${BGN}unix:///var/run/docker.sock${CL} (Compose-Prefill tcp://docker-socket-proxy:2375 NICHT übernehmen), Test connection → Save and run first scan.${CL}"
+fi
 echo -e "${INFO}Daten (SQLite) im Container: /var/lib/homedex – z. B. per Proxmox-Backup sichern.${CL}"

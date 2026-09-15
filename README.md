@@ -6,6 +6,12 @@ als LXC auf Proxmox VE – im Stil der Proxmox Community-Scripts.
 Am Ende: `http://<LXC-IP>:7377/` mit Setup-Wizard beim ersten Aufruf (Admin-Passwort anlegen),
 danach sofort nutzbar (Services-, Ports-, Routen-, Expiry-Übersicht nach erstem Scan).
 
+Im Wizard unter **First source → Docker source** eintragen:
+`Source name=Local Docker`, `Read-only endpoint=unix:///var/run/docker.sock`
+(Compose-Prefill `tcp://docker-socket-proxy:2375` NICHT übernehmen),
+optional `Host name=docker-local`, `Host address=127.0.0.1` →
+**Test connection** → **Save and run first scan**.
+
 Hat nichts mit Valhalla/Routing zu tun – eigenes Projekt, eigenes Repo.
 
 ## Install (Proxmox-Host als root)
