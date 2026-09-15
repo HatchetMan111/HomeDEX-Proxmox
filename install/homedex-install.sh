@@ -80,8 +80,15 @@ if [[ "${TOTAL_RAM_MB:-0}" -lt 512 ]]; then
   msg_warn "Wenig RAM (${TOTAL_RAM_MB} MB) – Homedex + Docker brauchen min. ca. 512 MB."
 fi
 # Port-Konflikt früh erkennen (ss oder /dev/tcp-Fallback, kein Abbruch bei fehlendem ss).
-if (command -v ss >/dev/null 2>&1 && ss -tln 2>/dev/null | grep -qE ":${PORT}[[:space:]]") \
-  || (exec 3<>/dev/tcp/127.0.0.1/"$PORT" 2>/dev/null && exec 3>&-); then
+# Die /dev/tcp-Probe in eigener Subshell mit stderr auf /dev/null, sonst meldet
+# bash bei freiem Port "connect: Connection refused" ins Log (harmlos, aber noisy).
+PORT_IN_USE=0
+if command -v ss >/dev/null 2>&1 && ss -tln 2>/dev/null | grep -qE ":${PORT}[[:space:]]"; then
+  PORT_IN_USE=1
+elif (exec 3<>"/dev/tcp/127.0.0.1/${PORT}") 2>/dev/null; then
+  PORT_IN_USE=1
+fi
+if [[ "$PORT_IN_USE" == "1" ]]; then
   # Falls nur ein alter Homedex auf dem Port läuft, ist das beim Update ok.
   if ! systemctl is-active --quiet homedex 2>/dev/null; then
     msg_error "Port ${PORT} ist bereits belegt (ss/lsof prüfen). Mit var_homedex_port=<frei> erneut starten."
@@ -131,23 +138,35 @@ msg_info "Lade Homedex ${VERSION} herunter"
 mkdir -p "$INSTALL_DIR"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
-if ! curl -fsSL --retry 3 --max-time 120 "$URL" -o "$TMPDIR/homedex.tar.gz"; then
+TARBALL_PATH="$TMPDIR/$TARBALL"
+if ! curl -fsSL --retry 3 --max-time 120 "$URL" -o "$TARBALL_PATH"; then
   msg_error "Download fehlgeschlagen: $URL"
   exit 1
 fi
 # checksums.txt verifizieren, wenn verfügbar (Upstream liefert SHA256 + SBOM).
+# Wichtig: exakt EINE Zeile matchen ("  <dateiname>" am Zeilenende), sonst wird
+# auch die .sbom.json-Zeile geprüft und schlägt fehl. Datei liegt unter ihrem
+# Originalnamen ($TARBALL) in $TMPDIR, daher passt sha256sum -c direkt.
 if curl -fsSL --retry 2 --max-time 30 "$CHECKSUM_URL" -o "$TMPDIR/checksums.txt" 2>/dev/null; then
-  if grep -q "$TARBALL" "$TMPDIR/checksums.txt" 2>/dev/null; then
-    (pushd "$TMPDIR" >/dev/null && sha256sum -c <(grep "$TARBALL" checksums.txt) && popd >/dev/null) \
-      && msg_ok "Checksumme ok (${TARBALL})" \
-      || { msg_error "Checksummen-Fehlschlag für ${TARBALL} – Abbruch."; exit 1; }
+  CHECK_LINE="$(grep -F "  $TARBALL" "$TMPDIR/checksums.txt" 2>/dev/null | grep -vE '\.sbom\.json$' || true)"
+  if [[ -z "${CHECK_LINE:-}" ]]; then
+    # Fallback: strikter Match mit Zeilenende-Anker (falls Format abweicht).
+    CHECK_LINE="$(grep -E "  ${TARBALL}\$" "$TMPDIR/checksums.txt" 2>/dev/null || true)"
+  fi
+  if [[ -n "${CHECK_LINE:-}" ]]; then
+    if (cd "$TMPDIR" && echo "$CHECK_LINE" | sha256sum -c - >/dev/null 2>&1); then
+      msg_ok "Checksumme ok (${TARBALL})"
+    else
+      msg_error "Checksummen-Fehlschlag für ${TARBALL} – Abbruch."
+      exit 1
+    fi
   else
     msg_warn "Tarball nicht in checksums.txt – Prüfung übersprungen."
   fi
 else
   msg_warn "checksums.txt nicht verfügbar – Prüfung übersprungen."
 fi
-tar -xzf "$TMPDIR/homedex.tar.gz" -C "$TMPDIR"
+tar -xzf "$TARBALL_PATH" -C "$TMPDIR"
 BIN_SRC="$(find "$TMPDIR" -maxdepth 2 -type f -name homedex | head -1)"
 if [[ -z "${BIN_SRC:-}" ]]; then
   msg_error "Binary 'homedex' nicht im Archiv gefunden"
