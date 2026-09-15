@@ -45,9 +45,16 @@ var_homedex_port="${var_homedex_port:-7377}"
 # var_docker=0 überspringt die automatische Docker-Installation im LXC
 # (dann Remote-Docker per tcp:// oder SSH-Host im Wizard eintragen).
 var_docker="${var_docker:-1}"
+# var_docker_proxy=1 installiert zusätzlich den Upstream-Socket-Proxy
+# (tecnativa/docker-socket-proxy, POST=0) auf 127.0.0.1:2375 – dann im Wizard
+# tcp://127.0.0.1:2375 statt unix:///var/run/docker.sock eintragen.
+var_docker_proxy="${var_docker_proxy:-0}"
+# var_homedex_version=v0.1.4 pinnt ein Release (Default: neuestes).
+var_homedex_version="${var_homedex_version:-}"
 # var_skip_storage_check=1 überspringt den Storage-Preflight (nicht empfohlen).
 var_skip_storage_check="${var_skip_storage_check:-0}"
-export var_homedex_port var_docker var_skip_storage_check
+export var_homedex_port var_docker var_docker_proxy var_homedex_version var_skip_storage_check
+export HOMEDEX_VERSION="$var_homedex_version" HOMEDEX_INSTALL_PROXY="$var_docker_proxy"
 
 header_info "$APP"
 variables
@@ -123,10 +130,11 @@ function storage_preflight() {
   msg_ok "Thin-Pools ok"
 
   # 4. Alte Container-Locks (lock: create/...) – nur Hinweis, kein Abbruch.
-  STALE_LOCKS="$(grep -l '^lock:' /etc/pve/nodes/*/lxc/*.conf /etc/pve/nodes/*/qemu-server/*.conf 2>/dev/null || true)"
+  # /etc/pve ist FUSE (pmxcfs): bei hängendem Cluster mit timeout absichern.
+  STALE_LOCKS="$(timeout 10 grep -l '^lock:' /etc/pve/nodes/*/lxc/*.conf /etc/pve/nodes/*/qemu-server/*.conf 2>/dev/null || true)"
   if [[ -n "${STALE_LOCKS:-}" ]]; then
     msg_warn "Alte Container-Locks gefunden (ggf. Reste früherer Abbrüche):"
-    echo "$STALE_LOCKS" | while read -r f; do echo -e "${TAB}${f}: $(grep '^lock:' "$f")"; done
+    echo "$STALE_LOCKS" | while read -r f; do echo -e "${TAB}${f}: $(timeout 5 grep '^lock:' "$f" 2>/dev/null || echo '?')"; done
     echo -e "${TAB}Aufräumen z. B. mit: pct unlock <CTID>"
   fi
 }
@@ -137,20 +145,34 @@ function update_script() {
   header_info
   check_container_storage
   check_container_resources
-  if [[ ! -x /opt/homedex/homedex ]]; then
-    msg_error "Keine Homedex-Installation in /opt/homedex gefunden!"
-    exit 1
+  # Update-Pfad: Der Installer liegt IM Container unter
+  # /opt/homedex/homedex-install.sh (wird bei jeder Installation dort abgelegt).
+  # Auf dem Host daher per pct exec ausführen – nie direkt auf dem Host.
+  if command -v pveversion >/dev/null 2>&1; then
+    # Auf dem Host: CTID auflösen (Umgebung oder Hostname-Lookup).
+    CTID_RESOLVED="${CTID:-}"
+    if [[ -z "${CTID_RESOLVED:-}" ]]; then
+      CTID_RESOLVED="$(pct list 2>/dev/null | awk -v h="${var_hostname:-homedex}" '$3==h {print $1; exit}')"
+    fi
+    if [[ -z "${CTID_RESOLVED:-}" ]]; then
+      msg_error "Kein Container gefunden (Hostname '${var_hostname:-homedex}'). CTID=123 bash ct/homedex.sh --update oder im Container direkt updaten."
+      exit 1
+    fi
+    if ! pct status "$CTID_RESOLVED" 2>/dev/null | grep -q running; then
+      msg_error "Container $CTID_RESOLVED läuft nicht (pct status). Erst starten, dann updaten."
+      exit 1
+    fi
+    msg_info "Aktualisiere Homedex in Container $CTID_RESOLVED (Daten bleiben erhalten)"
+    if pct exec "$CTID_RESOLVED" -- test -x /opt/homedex/homedex-install.sh 2>/dev/null; then
+      pct exec "$CTID_RESOLVED" -- env HOMEDEX_VERSION="${var_homedex_version:-}" HOMEDEX_INSTALL_PROXY="${var_docker_proxy:-0}" HOMEDEX_PORT="${var_homedex_port}" bash /opt/homedex/homedex-install.sh
+    else
+      msg_warn "/opt/homedex/homedex-install.sh fehlt im Container – lade Installer neu"
+      pct exec "$CTID_RESOLVED" -- bash -c "curl -fsSL '${COMMUNITY_SCRIPTS_URL}/install/homedex-install.sh' -o /tmp/homedex-install.sh && HOMEDEX_VERSION='${var_homedex_version:-}' HOMEDEX_INSTALL_PROXY='${var_docker_proxy:-0}' HOMEDEX_PORT='${var_homedex_port}' bash /tmp/homedex-install.sh"
+    fi
+    msg_ok "Update abgeschlossen – Daten in /var/lib/homedex bleiben erhalten."
+    exit 0
   fi
-  msg_info "Aktualisiere Homedex auf das neueste Release"
-  export HOMEDEX_PORT="$var_homedex_port"
-  # Gleicher Installer wie bei der Erstinstallation (idempotent, Daten bleiben erhalten)
-  source /dev/stdin <<<"$FUNCTIONS_FILE_PATH"
-  color
-  catch_errors
-  setting_up_container
-  network_check
-  update_os
-  # Installer erneut holen: läuft bereits IM Container, daher direkt ausführen
+  # Bereits IM Container (manueller Update-Lauf als root).
   if [[ -f /opt/homedex/homedex-install.sh ]]; then
     bash /opt/homedex/homedex-install.sh
   else
@@ -158,7 +180,7 @@ function update_script() {
     exit 1
   fi
   msg_ok "Update abgeschlossen – Daten in /var/lib/homedex bleiben erhalten."
-  exit
+  exit 0
 }
 
 start
